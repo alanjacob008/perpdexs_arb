@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Test</title>
+    <style>
+        body { font-family: monospace; padding: 20px; background: #000; color: #0f0; }
+        .log { margin: 5px 0; }
+        .hl { color: #0ff; }
+        .lt { color: #ff0; }
+        .error { color: #f00; }
+    </style>
+</head>
+<body>
+    <h2>WebSocket Connection Test</h2>
+    <div id="output"></div>
+
+    <script>
+        const output = document.getElementById('output');
+        function log(msg, className = '') {
+            const div = document.createElement('div');
+            div.className = 'log ' + className;
+            div.textContent = msg;
+            output.appendChild(div);
+            console.log(msg);
+        }
+
+        // Test Hyperliquid
+        log('=== HYPERLIQUID ===', 'hl');
+        const hlWs = new WebSocket('wss://api.hyperliquid.xyz/ws');
+
+        hlWs.onopen = () => {
+            log('[HL] ✓ Connected', 'hl');
+            const sub = { method: 'subscribe', subscription: { type: 'allMids' } };
+            hlWs.send(JSON.stringify(sub));
+            log('[HL] → Subscribed to allMids', 'hl');
+        };
+
+        hlWs.onmessage = (event) => {
+            const msg = JSON.parse(event.data);
+            if (msg.channel === 'subscriptionResponse') {
+                log('[HL] ✓ Subscription confirmed', 'hl');
+            } else if (msg.channel === 'allMids') {
+                const mids = msg.data.mids;
+                log(`[HL] ← Received ${Object.keys(mids).length} prices`, 'hl');
+                log(`[HL]    BTC: $${mids.BTC || 'N/A'}`, 'hl');
+                log(`[HL]    ETH: $${mids.ETH || 'N/A'}`, 'hl');
+                log(`[HL]    SOL: $${mids.SOL || 'N/A'}`, 'hl');
+            }
+        };
+
+        hlWs.onerror = (error) => {
+            log('[HL] ✗ Error: ' + error, 'error');
+        };
+
+        hlWs.onclose = () => {
+            log('[HL] Connection closed', 'hl');
+        };
+
+        // Test Lighter
+        setTimeout(() => {
+            log('\n=== LIGHTER ===', 'lt');
+            const ltWs = new WebSocket('wss://mainnet.zklighter.elliot.ai/stream');
+
+            ltWs.onopen = () => {
+                log('[LT] ✓ Connected', 'lt');
+                const sub = { type: 'subscribe', channel: 'market_stats/all' };
+                ltWs.send(JSON.stringify(sub));
+                log('[LT] → Subscribed to market_stats/all', 'lt');
+            };
+
+            let msgCount = 0;
+            ltWs.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+                msgCount++;
+                
+                // Log the actual structure
+                log(`[LT] Message #${msgCount}: ${JSON.stringify(msg).substring(0, 300)}`, 'lt');
+                
+                if (msg.type === 'update/market_stats') {
+                    const stats = msg.market_stats;
+                    log(`[LT] ← Market ${stats.market_id}: $${stats.mark_price}`, 'lt');
+                }
+                
+                if (msgCount > 5) {
+                    log('[LT] ✓ Stopping after 5 messages', 'lt');
+                    ltWs.close();
+                }
+            };
+
+            ltWs.onerror = (error) => {
+                log('[LT] ✗ Error: ' + error, 'error');
+            };
+
+            ltWs.onclose = () => {
+                log('[LT] Connection closed', 'lt');
+            };
+        }, 1000);
+    </script>
+</body>
+</html>
+

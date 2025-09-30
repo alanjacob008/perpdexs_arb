@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Pair Discovery</title>
+    <style>
+        body { font-family: monospace; padding: 20px; background: #1a1a1a; color: #00ff00; }
+        .section { margin: 20px 0; padding: 20px; background: #2a2a2a; border-radius: 8px; }
+        .pair { margin: 5px 0; }
+        h2 { color: #00ffff; }
+        .match { color: #ffff00; }
+        .nomatch { color: #ff6666; }
+    </style>
+</head>
+<body>
+    <h1>🔍 Discovering Pair Mappings</h1>
+    
+    <div class="section">
+        <h2>Step 1: Fetching Hyperliquid Coins...</h2>
+        <div id="hl-coins"></div>
+    </div>
+    
+    <div class="section">
+        <h2>Step 2: Discovering Lighter Markets via WebSocket...</h2>
+        <div id="lighter-markets"></div>
+    </div>
+    
+    <div class="section">
+        <h2>Step 3: Matched Pairs (Available on BOTH)</h2>
+        <div id="matched-pairs"></div>
+    </div>
+
+    <script>
+        const hlCoins = new Set();
+        const lighterMarkets = new Map(); // marketId -> info
+        const matchedPairs = [];
+
+        // Step 1: Fetch Hyperliquid coins
+        async function fetchHyperliquid() {
+            const output = document.getElementById('hl-coins');
+            try {
+                const response = await fetch('https://api.hyperliquid.xyz/info', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ type: 'meta' })
+                });
+                
+                const data = await response.json();
+                data.universe.forEach(coin => {
+                    hlCoins.add(coin.name);
+                });
+                
+                output.innerHTML = `✅ Found ${hlCoins.size} coins on Hyperliquid<br>` +
+                    `Coins: ${Array.from(hlCoins).slice(0, 20).join(', ')}... and more`;
+                
+                // Start WebSocket after HL is loaded
+                setTimeout(connectLighter, 1000);
+            } catch (error) {
+                output.innerHTML = `❌ Error: ${error.message}`;
+            }
+        }
+
+        // Step 2: Connect to Lighter WebSocket
+        function connectLighter() {
+            const output = document.getElementById('lighter-markets');
+            output.innerHTML = 'Connecting to Lighter WebSocket...';
+            
+            const ws = new WebSocket('wss://mainnet.zklighter.elliot.ai/stream');
+            
+            ws.onopen = () => {
+                output.innerHTML = '✅ Connected! Subscribing to market_stats/all...';
+                ws.send(JSON.stringify({
+                    type: 'subscribe',
+                    channel: 'market_stats/all'
+                }));
+            };
+
+            let messageCount = 0;
+            ws.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+                
+                if (msg.channel === 'market_stats:all' && msg.market_stats) {
+                    messageCount++;
+                    
+                    // Extract market info
+                    for (const [marketIdStr, stats] of Object.entries(msg.market_stats)) {
+                        const marketId = parseInt(marketIdStr);
+                        if (!lighterMarkets.has(marketId)) {
+                            lighterMarkets.set(marketId, {
+                                id: marketId,
+                                markPrice: stats.mark_price,
+                                indexPrice: stats.index_price
+                            });
+                        }
+                    }
+                    
+                    // Update display
+                    const marketList = Array.from(lighterMarkets.entries())
+                        .sort((a, b) => a[0] - b[0])
+                        .map(([id, info]) => 
+                            `<div class="pair">Market ${id}: $${info.markPrice}</div>`
+                        ).join('');
+                    
+                    output.innerHTML = `✅ Discovered ${lighterMarkets.size} markets (${messageCount} messages received)<br><br>` + marketList;
+                    
+                    // After collecting enough data, match pairs
+                    if (messageCount >= 5 && lighterMarkets.size >= 10) {
+                        matchPairs();
+                        ws.close();
+                    }
+                }
+            };
+
+            ws.onerror = (error) => {
+                output.innerHTML = `❌ WebSocket Error`;
+            };
+        }
+
+        // Step 3: Match pairs by price comparison
+        function matchPairs() {
+            const output = document.getElementById('matched-pairs');
+            output.innerHTML = 'Analyzing price patterns to match coins...';
+            
+            // Common price ranges to help identify coins
+            const priceHints = {
+                'BTC': { min: 100000, max: 120000 },
+                'ETH': { min: 3000, max: 5000 },
+                'SOL': { min: 180, max: 250 },
+                'AVAX': { min: 30, max: 60 },
+                'LINK': { min: 18, max: 30 },
+                'ATOM': { min: 8, max: 15 },
+                'DOT': { min: 5, max: 12 },
+                'DOGE': { min: 0.3, max: 0.5 },
+                'ADA': { min: 0.8, max: 1.2 },
+            };
+
+            const mapping = [];
+            
+            for (const [marketId, info] of lighterMarkets) {
+                const price = parseFloat(info.markPrice);
+                
+                // Try to match by price
+                let matchedCoin = null;
+                for (const [coin, range] of Object.entries(priceHints)) {
+                    if (price >= range.min && price <= range.max && hlCoins.has(coin)) {
+                        matchedCoin = coin;
+                        break;
+                    }
+                }
+                
+                const isOnHL = matchedCoin ? '✅' : '❓';
+                const coinName = matchedCoin || 'Unknown';
+                
+                mapping.push({
+                    marketId,
+                    price,
+                    suggestedCoin: coinName,
+                    confirmed: !!matchedCoin
+                });
+            }
+            
+            // Sort by market ID
+            mapping.sort((a, b) => a.marketId - b.marketId);
+            
+            // Display
+            let html = '<h3>Discovered Mappings:</h3>';
+            html += '<div style="background: #333; padding: 15px; border-radius: 5px; margin: 10px 0;">';
+            html += '<pre style="color: #00ff00; margin: 0;">const LIGHTER_MARKET_MAP: Record&lt;number, string&gt; = {\n';
+            
+            mapping.forEach(m => {
+                const status = m.confirmed ? 'match' : 'nomatch';
+                html += `  <span class="${status}">${m.marketId}: '${m.suggestedCoin}', // $${m.price}</span>\n`;
+            });
+            
+            html += '};</pre></div>';
+            
+            html += '<h3>Instructions:</h3>';
+            html += '<ol>';
+            html += '<li>Compare prices above with actual exchange prices</li>';
+            html += '<li>Look at console for raw data: <code>console.log(lighterMarkets)</code></li>';
+            html += '<li>Manually verify and update the mapping in <code>lib/pairMapping.ts</code></li>';
+            html += '</ol>';
+            
+            // Add to console for easy copying
+            console.log('=== LIGHTER MARKETS ===');
+            console.log('Markets discovered:', Array.from(lighterMarkets.entries()));
+            console.log('\n=== SUGGESTED MAPPING (verify prices!) ===');
+            const mapObj = {};
+            mapping.forEach(m => {
+                mapObj[m.marketId] = m.suggestedCoin;
+            });
+            console.log(mapObj);
+            
+            // Store globally for inspection
+            window.lighterMarkets = lighterMarkets;
+            window.hlCoins = hlCoins;
+            window.mapping = mapping;
+            
+            output.innerHTML = html;
+        }
+
+        // Start discovery
+        fetchHyperliquid();
+    </script>
+</body>
+</html>
+
